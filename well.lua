@@ -1,37 +1,35 @@
 -- Well
 -- A deep audio well 
 -- with circular ripples
--- v1.0.2 @PonchoMcGee
---
--- E1: Change scale
--- E2: Direction (Up/Down)
--- E3: Speed/Hold time
--- K2: Toggle mode
--- K3: Toggle sound source
--- Grid: Play + hold notes
+-- v1.0.3 @PonchoMcGee
 
 engine.name = 'PolyPerc'
 
 -- requirements
-softcut = require 'softcut'
 musicutil = require 'musicutil'
 
 -- initialization
 function init()
-  -- script state
-  well = {
-    scale_names = {"Major", "Minor", "Pentatonic", "Chromatic"},
-    current_scale = 1,
-    direction = 1, -- 1 for descending, -1 for ascending
-    base_note = 60,
-    num_echoes = 6,
-    echo_spacing = 0.2,  -- initial echo speed
-    decay_factor = 0.8,
-    mode = 1,  -- 1 for main, 2 for secondary parameters
-    hold_interval = 0.25, -- interval for held notes (in seconds)
-    use_sample = false, -- toggle between sample and PolyPerc
-    show_instructions = true -- flag for welcome screen
-  }
+  -- initialize script state
+  params:add_group("WELL", 13)
+  
+  params:add_option("scale", "Scale", {"Major", "Minor", "Pentatonic", "Chromatic"}, 1)
+  params:add_option("direction", "Direction", {"Down", "Up"}, 1)
+  params:add_control("echo_spacing", "Echo Speed", controlspec.new(0.05, 1.0, 'lin', 0.01, 0.2, "s"))
+  params:add_control("hold_interval", "Hold Time", controlspec.new(0.1, 2.0, 'lin', 0.01, 0.25, "s"))
+  params:add_control("decay_factor", "Decay", controlspec.new(0.1, 0.99, 'lin', 0.01, 0.8))
+  params:add_option("sound_source", "Sound Source", {"PolyPerc", "Sample"}, 1)
+  params:add_number("base_note", "Base Note", 0, 127, 60)
+  
+  params:add_control("cutoff", "Cutoff", controlspec.new(50, 5000, 'exp', 0, 1000, "Hz"))
+  params:add_control("release", "Release", controlspec.new(0.1, 3.0, 'lin', 0, 0.5, "s"))
+  
+  params:bang()
+  
+  -- visual state
+  screen_dirty = true
+  show_instructions = true
+  mode = 1 -- 1 for main, 2 for secondary parameters
   
   -- held notes state
   held_notes = {}
@@ -47,49 +45,68 @@ function init()
   grid_dirty = true
   grid_ripples = {}
   
-  -- initialize softcut
-  softcut.reset()
-  
-  -- voice 1 for live input
-  softcut.enable(1,1)
-  softcut.buffer(1,1)
-  softcut.level(1,1.0)
-  softcut.position(1,1)
-  softcut.loop(1,1)
-  softcut.loop_start(1,1)
-  softcut.loop_end(1,5)
-  softcut.rec(1,1)
-  softcut.play(1,1)
-  softcut.rate(1,1.0)
-  softcut.level_input_cut(1,1,1.0)
-  softcut.level_input_cut(2,1,1.0)
-  
-  -- additional voices for echoes
-  for i=2,well.num_echoes do
-    softcut.enable(i,1)
-    softcut.buffer(i,1)
-    softcut.level(i,1.0)
-    softcut.position(i,1)
-    softcut.loop(i,1)
-    softcut.loop_start(i,1)
-    softcut.loop_end(i,5)
-    softcut.play(i,1)
-    softcut.rate(i,1.0)
+  -- initialize softcut for sample playback
+  for i=1,6 do
+    softcut.enable(i, 1)
+    softcut.buffer(i, 1)
+    softcut.level(i, 1.0)
+    softcut.position(i, 1)
+    softcut.loop(i, 1)
+    softcut.loop_start(i, 1)
+    softcut.loop_end(i, 5)
+    softcut.play(i, 1)
+    softcut.rate(i, 1.0)
+    if i == 1 then
+      softcut.rec(i, 1)
+      softcut.level_input_cut(1, i, 1.0)
+      softcut.level_input_cut(2, i, 1.0)
+    end
   end
   
   -- initialize PolyPerc parameters
-  engine.release(0.5)
-  engine.cutoff(1000)
+  engine.release(params:get("release"))
+  engine.cutoff(params:get("cutoff"))
   
-  -- initialize hold metro
-  hold_metro = metro.init(play_held_notes, well.hold_interval, -1)
+  -- initialize metro for held notes
+  hold_metro = metro.init()
+  hold_metro.event = play_held_notes
+  hold_metro.time = params:get("hold_interval")
   
-  -- start timers
-  metro_grid_redraw = metro.init(grid_redraw, 1/30, -1)
-  metro_grid_redraw:start()
+  -- metro for screen redraw
+  screen_metro = metro.init()
+  screen_metro.event = function()
+    if screen_dirty then
+      redraw()
+      screen_dirty = false
+    end
+  end
+  screen_metro.time = 1/15
+  screen_metro:start()
+  
+  -- metro for grid redraw
+  grid_metro = metro.init()
+  grid_metro.event = function()
+    if grid_dirty then
+      grid_redraw()
+      grid_dirty = false
+    end
+  end
+  grid_metro.time = 1/30
+  grid_metro:start()
   
   -- load default sample
-  load_sample("audio/common/cricket.wav")
+  softcut.buffer_clear()
+  softcut.buffer_read_mono(_path.audio.."common/cricket.wav", 0, 1, -1, 1, 1)
+end
+
+-- cleanup on script close
+function cleanup()
+  hold_metro:stop()
+  screen_metro:stop()
+  grid_metro:stop()
+  
+  -- clear softcut
+  softcut.reset()
 end
 
 -- function to play held notes
@@ -102,32 +119,24 @@ end
 -- function to play a note
 function play_note(x, y)
   local note_offset = ((8-y) * 4) + (x-8)
-  local note = well.base_note + note_offset
+  local note = params:get("base_note") + note_offset
   
-  if well.use_sample then
-    if well.direction == 1 then
-      -- descending sequence
-      for i=1,well.num_echoes do
-        local delay = (i-1) * well.echo_spacing
-        local level = well.decay_factor ^ (i-1)
-        local pitch = note - (i-1) * get_scale_interval()
-        
-        softcut.level(i, level)
-        softcut.rate(i, musicutil.note_num_to_freq(pitch) / 440)
+  if params:get("sound_source") == 2 then -- Sample
+    local direction = params:get("direction")
+    for i=1,6 do
+      local delay = (i-1) * params:get("echo_spacing")
+      local level = params:get("decay_factor") ^ (i-1)
+      local pitch = note
+      if direction == 1 then -- Down
+        pitch = note - (i-1) * get_scale_interval()
+      else -- Up
+        pitch = note + (i-1) * get_scale_interval()
       end
-    else
-      -- ascending sequence
-      for i=1,well.num_echoes do
-        local delay = (i-1) * well.echo_spacing
-        local level = well.decay_factor ^ (i-1)
-        local pitch = note + (i-1) * get_scale_interval()
-        
-        softcut.level(i, level)
-        softcut.rate(i, musicutil.note_num_to_freq(pitch) / 440)
-      end
+      
+      softcut.level(i, level)
+      softcut.rate(i, musicutil.note_num_to_freq(pitch) / 440)
     end
-  else
-    -- use PolyPerc engine
+  else -- PolyPerc
     engine.hz(musicutil.note_num_to_freq(note))
   end
 end
@@ -136,8 +145,7 @@ end
 function redraw()
   screen.clear()
   
-  if well.show_instructions then
-    -- draw welcome screen
+  if show_instructions then
     screen.level(15)
     screen.move(64,15)
     screen.text_center("W E L L")
@@ -145,7 +153,7 @@ function redraw()
     screen.move(5,25)
     screen.text("K2: Toggle mode")
     screen.move(5,33)
-    screen.text("K3: Toggle sound (Sample/PolyPerc)")
+    screen.text("K3: Toggle sound source")
     
     screen.move(5,45)
     screen.text("E1: Change scale")
@@ -154,11 +162,9 @@ function redraw()
     screen.move(5,61)
     screen.text("E3: Speed/Hold time (by mode)")
     
-    screen.level(15)
     screen.move(64,40)
     screen.text_center("press K1 to continue")
   else
-    -- draw regular interface
     -- draw concentric circles
     for i=1,num_circles do
       local radius = i * circle_spacing
@@ -168,40 +174,31 @@ function redraw()
       screen.stroke()
     end
     
-    -- draw active ripples
-    for i=1,well.num_echoes do
-      if well.current_echo == i then
-        screen.level(15)
-        screen.circle(screen_center_x, screen_center_y, i * circle_spacing)
-        screen.stroke()
-      end
-    end
-    
     -- draw parameter info
     screen.level(15)
     screen.move(0, 60)
-    screen.text("Scale: " .. well.scale_names[well.current_scale])
+    screen.text("Scale: " .. params:string("scale"))
     screen.move(0, 50)
-    screen.text(well.direction == 1 and "Down" or "Up")
+    screen.text(params:string("direction"))
     
     -- show current mode and relevant parameter
-    if well.mode == 1 then
+    if mode == 1 then
       screen.move(80, 60)
-      screen.text(string.format("Speed: %.2f", well.echo_spacing))
+      screen.text(string.format("Speed: %.2f", params:get("echo_spacing")))
     else
       screen.move(80, 60)
-      screen.text(string.format("Hold: %.2f", well.hold_interval))
+      screen.text(string.format("Hold: %.2f", params:get("hold_interval")))
     end
     
     -- show sound source
     screen.move(0, 40)
-    screen.text(well.use_sample and "Sample" or "PolyPerc")
+    screen.text(params:string("sound_source"))
   end
   
   screen.update()
 end
 
--- grid event handling
+-- grid key function
 function g.key(x, y, z)
   local pos = x .. "," .. y
   
@@ -235,44 +232,45 @@ function g.key(x, y, z)
       hold_metro:stop()
     end
   end
+  grid_dirty = true
 end
 
 -- grid redraw function
 function grid_redraw()
-  if grid_dirty then
-    g:all(0)
+  if g == nil then return end
+  
+  g:all(0)
+  
+  -- draw held notes
+  for pos, note in pairs(held_notes) do
+    g:led(note.x, note.y, 15)
+  end
+  
+  -- update and draw ripples
+  for i=#grid_ripples,1,-1 do
+    local r = grid_ripples[i]
+    r.radius = r.radius + 0.5
+    r.life = r.life - 1
     
-    -- draw held notes
-    for pos, note in pairs(held_notes) do
-      g:led(note.x, note.y, 15)
-    end
-    
-    -- update and draw ripples
-    for i=#grid_ripples,1,-1 do
-      local r = grid_ripples[i]
-      r.radius = r.radius + 0.5
-      r.life = r.life - 1
-      
-      -- draw ripple
-      for x=1,16 do
-        for y=1,8 do
-          local dx = x - r.x
-          local dy = y - r.y
-          local distance = math.sqrt(dx*dx + dy*dy)
-          if math.abs(distance - r.radius) < 1 then
-            g:led(x, y, math.floor(r.life * 2))
-          end
+    -- draw ripple
+    for x=1,16 do
+      for y=1,8 do
+        local dx = x - r.x
+        local dy = y - r.y
+        local distance = math.sqrt(dx*dx + dy*dy)
+        if math.abs(distance - r.radius) < 1 then
+          g:led(x, y, math.floor(r.life * 2))
         end
       end
-      
-      -- remove dead ripples
-      if r.life <= 0 then
-        table.remove(grid_ripples, i)
-      end
     end
     
-    g:refresh()
+    -- remove dead ripples
+    if r.life <= 0 then
+      table.remove(grid_ripples, i)
+    end
   end
+  
+  g:refresh()
 end
 
 -- helper functions
@@ -283,49 +281,39 @@ function get_scale_interval()
     {2,2,3,2,3},     -- pentatonic
     {1,1,1,1,1,1,1,1,1,1,1,1} -- chromatic
   }
-  return intervals[well.current_scale][1]
-end
-
-function load_sample(file)
-  -- load sample into softcut buffer
-  softcut.buffer_clear()
-  softcut.buffer_read_mono(file, 0, 1, -1, 1, 1)
+  local scale_index = params:get("scale")
+  return intervals[scale_index][1]
 end
 
 -- encoder handlers
 function enc(n,d)
   if n == 1 then
-    well.current_scale = util.clamp(well.current_scale + d, 1, #well.scale_names)
+    params:delta("scale", d)
   elseif n == 2 then
-    well.direction = d > 0 and 1 or -1
+    params:delta("direction", d)
   elseif n == 3 then
-    if well.mode == 1 then
-      -- adjust echo speed
-      well.echo_spacing = util.clamp(well.echo_spacing + d/100, 0.05, 1.0)
+    if mode == 1 then
+      params:delta("echo_spacing", d)
     else
-      -- adjust hold interval
-      well.hold_interval = util.clamp(well.hold_interval + d/100, 0.1, 2.0)
-      hold_metro.time = well.hold_interval
+      params:delta("hold_interval", d)
+      hold_metro.time = params:get("hold_interval")
     end
   end
-  redraw()
+  screen_dirty = true
 end
 
 -- key handlers
 function key(n,z)
-  if well.show_instructions and n == 1 and z == 1 then
-    -- exit instructions
-    well.show_instructions = false
-    redraw()
+  if show_instructions and n == 1 and z == 1 then
+    show_instructions = false
+    screen_dirty = true
     return
   end
   
   if n == 2 and z == 1 then
-    -- toggle mode
-    well.mode = well.mode == 1 and 2 or 1
+    mode = mode == 1 and 2 or 1
   elseif n == 3 and z == 1 then
-    -- toggle between sample and PolyPerc
-    well.use_sample = not well.use_sample
+    params:delta("sound_source", 1)
   end
-  redraw()
+  screen_dirty = true
 end
