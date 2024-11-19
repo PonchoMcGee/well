@@ -1,7 +1,7 @@
 -- Well
 -- A deep audio well 
 -- with circular ripples
--- v1.0.4 @your_name
+-- v1.0.5 @your_name
 --
 -- E1: Change scale
 -- E2: Direction (Up/Down)
@@ -30,8 +30,9 @@ local num_circles = 6
 local hold_metro
 local screen_metro
 local grid_metro
+local current_echo = 1
 
--- grid key function (must be declared before init)
+-- grid key function
 function grid.key(x, y, z)
   local pos = x .. "," .. y
   
@@ -50,8 +51,9 @@ function grid.key(x, y, z)
     
     -- play the note
     play_note(x, y)
+    current_echo = 1
     
-    -- start metro if this is the first held note
+    -- start hold metro if this is the first held note
     if tab.count(held_notes) == 1 and hold_metro then
       hold_metro:start()
     end
@@ -68,29 +70,44 @@ function grid.key(x, y, z)
   grid_dirty = true
 end
 
+-- function to create echoes
+function create_echo(note)
+  if current_echo <= 6 then
+    local level = params:get("decay_factor") ^ (current_echo - 1)
+    local pitch = note
+    
+    if params:get("direction") == 1 then -- Down
+      pitch = note - (current_echo - 1) * get_scale_interval()
+    else -- Up
+      pitch = note + (current_echo - 1) * get_scale_interval()
+    end
+    
+    if params:get("sound_source") == 2 then -- Sample
+      softcut.level(current_echo, level)
+      softcut.rate(current_echo, musicutil.note_num_to_freq(pitch) / 440)
+    else -- PolyPerc
+      engine.hz(musicutil.note_num_to_freq(pitch))
+    end
+    
+    current_echo = current_echo + 1
+    
+    -- Schedule next echo
+    if current_echo <= 6 then
+      metro.init(function()
+        create_echo(note)
+      end, params:get("echo_spacing"), 1):start()
+    end
+  end
+end
+
 -- helper function for note playing
 function play_note(x, y)
   local note_offset = ((8-y) * 4) + (x-8)
   local note = params:get("base_note") + note_offset
   
-  if params:get("sound_source") == 2 then -- Sample
-    local direction = params:get("direction")
-    for i=1,6 do
-      local delay = (i-1) * params:get("echo_spacing")
-      local level = params:get("decay_factor") ^ (i-1)
-      local pitch = note
-      if direction == 1 then -- Down
-        pitch = note - (i-1) * get_scale_interval()
-      else -- Up
-        pitch = note + (i-1) * get_scale_interval()
-      end
-      
-      softcut.level(i, level)
-      softcut.rate(i, musicutil.note_num_to_freq(pitch) / 440)
-    end
-  else -- PolyPerc
-    engine.hz(musicutil.note_num_to_freq(note))
-  end
+  -- Start echo sequence
+  current_echo = 1
+  create_echo(note)
 end
 
 -- function to play held notes
@@ -113,7 +130,10 @@ function init()
   params:add_number("base_note", "Base Note", 0, 127, 60)
   params:add_control("cutoff", "Cutoff", controlspec.new(50, 5000, 'exp', 0, 1000, "Hz"))
   params:add_control("release", "Release", controlspec.new(0.1, 3.0, 'lin', 0, 0.5, "s"))
-  params:bang()
+  
+  -- initialize PolyPerc parameters
+  engine.release(0.5)
+  engine.cutoff(1000)
   
   -- initialize softcut for sample playback
   softcut.reset()
@@ -135,31 +155,25 @@ function init()
     end
   end
   
-  -- initialize PolyPerc parameters
-  engine.release(params:get("release"))
-  engine.cutoff(params:get("cutoff"))
-  
   -- initialize metros
   hold_metro = metro.init()
   hold_metro.event = play_held_notes
   hold_metro.time = params:get("hold_interval")
   
+  -- screen redraw metro
   screen_metro = metro.init()
   screen_metro.event = function()
-    if screen_dirty then
-      redraw()
-      screen_dirty = false
-    end
+    screen_dirty = true
+    redraw()
   end
-  screen_metro.time = 1/15
+  screen_metro.time = 1/30
   screen_metro:start()
   
+  -- grid redraw metro
   grid_metro = metro.init()
   grid_metro.event = function()
-    if grid_dirty then
-      grid_redraw()
-      grid_dirty = false
-    end
+    grid_dirty = true
+    grid_redraw()
   end
   grid_metro.time = 1/30
   grid_metro:start()
@@ -167,6 +181,9 @@ function init()
   -- load default sample
   softcut.buffer_clear()
   softcut.buffer_read_mono(_path.audio.."common/cricket.wav", 0, 1, -1, 1, 1)
+  
+  -- initialize params
+  params:bang()
 end
 
 -- cleanup on script close
@@ -207,6 +224,13 @@ function redraw()
       local brightness = math.floor(15 / i)
       screen.level(brightness)
       screen.circle(screen_center_x, screen_center_y, radius)
+      screen.stroke()
+    end
+    
+    -- highlight active echo
+    if current_echo <= num_circles then
+      screen.level(15)
+      screen.circle(screen_center_x, screen_center_y, current_echo * circle_spacing)
       screen.stroke()
     end
     
@@ -309,10 +333,12 @@ function key(n,z)
     return
   end
   
-  if n == 2 and z == 1 then
-    mode = mode == 1 and 2 or 1
-  elseif n == 3 and z == 1 then
-    params:delta("sound_source", 1)
+  if z == 1 then
+    if n == 2 then
+      mode = mode == 1 and 2 or 1
+    elseif n == 3 then
+      params:delta("sound_source", 1)
+    end
+    screen_dirty = true
   end
-  screen_dirty = true
 end
