@@ -57,7 +57,7 @@ Well creates cascading echoes that transpose up or down while getting quieter. V
 
 From maiden type:
 ```
-;install https://github.com/your-username/well
+;install https://github.com/PonchoMcGee/well
 ```
 
 ## Version History
