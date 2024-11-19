@@ -1,7 +1,7 @@
 -- Well
 -- A deep audio well 
 -- with circular ripples
--- v1.0.0 @your_name
+-- v1.0.2 @PonchoMcGee
 --
 -- E1: Change scale
 -- E2: Direction (Up/Down)
@@ -16,7 +16,121 @@ engine.name = 'PolyPerc'
 softcut = require 'softcut'
 musicutil = require 'musicutil'
 
-[Previous init() and other functions remain the same until redraw()]
+-- initialization
+function init()
+  -- script state
+  well = {
+    scale_names = {"Major", "Minor", "Pentatonic", "Chromatic"},
+    current_scale = 1,
+    direction = 1, -- 1 for descending, -1 for ascending
+    base_note = 60,
+    num_echoes = 6,
+    echo_spacing = 0.2,  -- initial echo speed
+    decay_factor = 0.8,
+    mode = 1,  -- 1 for main, 2 for secondary parameters
+    hold_interval = 0.25, -- interval for held notes (in seconds)
+    use_sample = false, -- toggle between sample and PolyPerc
+    show_instructions = true -- flag for welcome screen
+  }
+  
+  -- held notes state
+  held_notes = {}
+  
+  -- visual parameters
+  screen_center_x = 64
+  screen_center_y = 32
+  circle_spacing = 8
+  num_circles = 6
+  
+  -- initialize grid
+  g = grid.connect()
+  grid_dirty = true
+  grid_ripples = {}
+  
+  -- initialize softcut
+  softcut.reset()
+  
+  -- voice 1 for live input
+  softcut.enable(1,1)
+  softcut.buffer(1,1)
+  softcut.level(1,1.0)
+  softcut.position(1,1)
+  softcut.loop(1,1)
+  softcut.loop_start(1,1)
+  softcut.loop_end(1,5)
+  softcut.rec(1,1)
+  softcut.play(1,1)
+  softcut.rate(1,1.0)
+  softcut.level_input_cut(1,1,1.0)
+  softcut.level_input_cut(2,1,1.0)
+  
+  -- additional voices for echoes
+  for i=2,well.num_echoes do
+    softcut.enable(i,1)
+    softcut.buffer(i,1)
+    softcut.level(i,1.0)
+    softcut.position(i,1)
+    softcut.loop(i,1)
+    softcut.loop_start(i,1)
+    softcut.loop_end(i,5)
+    softcut.play(i,1)
+    softcut.rate(i,1.0)
+  end
+  
+  -- initialize PolyPerc parameters
+  engine.release(0.5)
+  engine.cutoff(1000)
+  
+  -- initialize hold metro
+  hold_metro = metro.init(play_held_notes, well.hold_interval, -1)
+  
+  -- start timers
+  metro_grid_redraw = metro.init(grid_redraw, 1/30, -1)
+  metro_grid_redraw:start()
+  
+  -- load default sample
+  load_sample("audio/common/cricket.wav")
+end
+
+-- function to play held notes
+function play_held_notes()
+  for pos, note in pairs(held_notes) do
+    play_note(note.x, note.y)
+  end
+end
+
+-- function to play a note
+function play_note(x, y)
+  local note_offset = ((8-y) * 4) + (x-8)
+  local note = well.base_note + note_offset
+  
+  if well.use_sample then
+    if well.direction == 1 then
+      -- descending sequence
+      for i=1,well.num_echoes do
+        local delay = (i-1) * well.echo_spacing
+        local level = well.decay_factor ^ (i-1)
+        local pitch = note - (i-1) * get_scale_interval()
+        
+        softcut.level(i, level)
+        softcut.rate(i, musicutil.note_num_to_freq(pitch) / 440)
+      end
+    else
+      -- ascending sequence
+      for i=1,well.num_echoes do
+        local delay = (i-1) * well.echo_spacing
+        local level = well.decay_factor ^ (i-1)
+        local pitch = note + (i-1) * get_scale_interval()
+        
+        softcut.level(i, level)
+        softcut.rate(i, musicutil.note_num_to_freq(pitch) / 440)
+      end
+    end
+  else
+    -- use PolyPerc engine
+    engine.hz(musicutil.note_num_to_freq(note))
+  end
+end
 
 -- screen redraw function
 function redraw()
