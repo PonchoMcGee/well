@@ -1,4 +1,4 @@
--- Well (v1.0.7)
+-- Well (v1.0.8)
 -- A deep audio well with 
 -- circular ripples
 -- @your_name
@@ -31,12 +31,12 @@ local grid_dirty = false
 local grid_ripples = {}
 local held_notes = {}
 local screen_dirty = true
-local show_instructions = true
 local mode = 1
 local screen_center_x = 64
 local screen_center_y = 32
 local circle_spacing = 8
 local num_circles = CIRCLES
+local active_screen = "instructions"
 local hold_metro
 local screen_metro
 local grid_metro
@@ -135,11 +135,32 @@ end
 
 -- initialization
 function init()
+  active_screen = "instructions"
+  screen_dirty = true
+  
   -- script state params
   params:add_group("WELL", 13)
   
   -- musical parameters
-  params:add_option("scale", "Scale", {"Major", "Minor", "Pentatonic", "Chromatic"}, 1)
+  params:add_option("scale", "Scale", {
+    "Major",
+    "Minor",
+    "Dorian",
+    "Phrygian",
+    "Lydian",
+    "Mixolydian",
+    "Locrian",
+    "Harmonic Minor",
+    "Melodic Minor",
+    "Pentatonic Major",
+    "Pentatonic Minor",
+    "Blues",
+    "Whole Tone",
+    "Hungarian Minor",
+    "Japanese",
+    "Chromatic"
+  }, 1)
+  
   params:add_option("direction", "Direction", {"Down", "Up"}, 1)
   params:add_option("sound_source", "Sound Source", {"PolyPerc", "Sample"}, 1)
   params:add_number("base_note", "Base Note", 0, 127, BASE_NOTE)
@@ -188,16 +209,20 @@ function init()
   
   screen_metro = metro.init()
   screen_metro.event = function()
-    screen_dirty = true
-    redraw()
+    if screen_dirty then
+      redraw()
+      screen_dirty = false
+    end
   end
   screen_metro.time = 1/30
   screen_metro:start()
   
   grid_metro = metro.init()
   grid_metro.event = function()
-    grid_dirty = true
-    grid_redraw()
+    if grid_dirty then
+      grid_redraw()
+      grid_dirty = false
+    end
   end
   grid_metro.time = 1/30
   grid_metro:start()
@@ -223,7 +248,7 @@ end
 function redraw()
   screen.clear()
   
-  if show_instructions then
+  if active_screen == "instructions" then
     -- draw welcome screen
     screen.level(15)
     screen.move(64,15)
@@ -244,8 +269,8 @@ function redraw()
     screen.move(64,40)
     screen.text_center("press K1 to continue")
   else
-    -- main interface
-    -- draw concentric circles
+    -- main animation interface
+    -- draw base concentric circles
     for i=1,num_circles do
       local radius = i * circle_spacing
       local brightness = math.floor(15 / i)
@@ -254,14 +279,14 @@ function redraw()
       screen.stroke()
     end
     
-    -- highlight active echo
+    -- highlight active echo circle
     if current_echo and current_echo <= num_circles then
       screen.level(15)
       screen.circle(screen_center_x, screen_center_y, current_echo * circle_spacing)
       screen.stroke()
     end
     
-    -- draw parameter info
+    -- parameter display
     screen.level(15)
     screen.move(2, 60)
     screen.text(params:string("scale"))
@@ -269,7 +294,6 @@ function redraw()
     screen.move(2, 50)
     screen.text(params:string("direction"))
     
-    -- show current mode and relevant parameter
     if mode == 1 then
       screen.move(70, 60)
       screen.text(string.format("spd:%.1f", params:get("echo_spacing")))
@@ -278,7 +302,6 @@ function redraw()
       screen.text(string.format("hld:%.1f", params:get("hold_interval")))
     end
     
-    -- show sound source
     screen.move(2, 40)
     screen.text(params:get("sound_source") == 1 and "PolyPerc" or "Sample")
   end
@@ -325,9 +348,21 @@ end
 -- helper functions
 function get_scale_interval()
   local intervals = {
-    {2,2,1,2,2,2,1}, -- major
-    {2,1,2,2,1,2,2}, -- minor
-    {2,2,3,2,3},     -- pentatonic
+    {2,2,1,2,2,2,1},     -- major
+    {2,1,2,2,1,2,2},     -- minor
+    {2,1,2,2,2,1,2},     -- dorian
+    {1,2,2,2,1,2,2},     -- phrygian
+    {2,2,2,1,2,2,1},     -- lydian
+    {2,2,1,2,2,1,2},     -- mixolydian
+    {1,2,2,1,2,2,2},     -- locrian
+    {2,1,2,2,1,3,1},     -- harmonic minor
+    {2,1,2,2,2,2,1},     -- melodic minor
+    {2,2,3,2,3},         -- pentatonic major
+    {3,2,2,3,2},         -- pentatonic minor
+    {3,2,1,1,3,2},       -- blues
+    {2,2,2,2,2,2},       -- whole tone
+    {2,1,3,1,2,1,2},     -- hungarian minor
+    {2,3,2,2,3},         -- japanese
     {1,1,1,1,1,1,1,1,1,1,1,1} -- chromatic
   }
   local scale_index = params:get("scale")
@@ -355,18 +390,18 @@ end
 
 -- key handlers
 function key(n,z)
-  if n == 1 and z == 1 and show_instructions then
-    show_instructions = false
-    screen_dirty = true
-    return
-  end
-  
-  if z == 1 then
-    if n == 2 then
+  if z == 1 then  -- only on key press
+    if n == 1 then
+      if active_screen == "instructions" then
+        active_screen = "main"
+        screen_dirty = true
+      end
+    elseif n == 2 then
       mode = mode == 1 and 2 or 1
+      screen_dirty = true
     elseif n == 3 then
       params:delta("sound_source", 1)
+      screen_dirty = true
     end
-    screen_dirty = true
   end
 end
