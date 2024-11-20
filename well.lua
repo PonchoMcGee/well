@@ -1,7 +1,7 @@
--- Well
--- A deep audio well 
--- with circular ripples
--- v1.0.5 @your_name
+-- Well (v1.0.6)
+-- A deep audio well with 
+-- circular ripples
+-- @your_name
 --
 -- E1: Change scale
 -- E2: Direction (Up/Down)
@@ -9,6 +9,16 @@
 -- K2: Toggle mode
 -- K3: Toggle sound source
 -- Grid: Play + hold notes
+--
+-- Hold grid keys to repeat
+-- Higher notes toward top
+
+-- User adjustable parameters
+local CIRCLES = 6         -- number of circles to display
+local BASE_NOTE = 60      -- MIDI note number (60 = middle C)
+local RIPPLE_SPEED = 0.5  -- how fast ripples spread
+local RIPPLE_LIFE = 8     -- how long ripples last
+local GRID_BRIGHTNESS = 15 -- maximum grid LED brightness (2-15)
 
 engine.name = 'PolyPerc'
 
@@ -26,30 +36,30 @@ local mode = 1
 local screen_center_x = 64
 local screen_center_y = 32
 local circle_spacing = 8
-local num_circles = 6
+local num_circles = CIRCLES
 local hold_metro
 local screen_metro
 local grid_metro
 local current_echo = 1
 
--- grid key function
+-- grid key function - handles note triggering and visual feedback
 function grid.key(x, y, z)
   local pos = x .. "," .. y
   
-  if z == 1 then
-    -- create new ripple
+  if z == 1 then -- key pressed
+    -- create new ripple effect
     local ripple = {
       x = x,
       y = y,
       radius = 1,
-      life = 8
+      life = RIPPLE_LIFE
     }
     table.insert(grid_ripples, ripple)
     
     -- store held note
     held_notes[pos] = {x = x, y = y}
     
-    -- play the note
+    -- play the note and start echo sequence
     play_note(x, y)
     current_echo = 1
     
@@ -58,7 +68,7 @@ function grid.key(x, y, z)
       hold_metro:start()
     end
     
-  else -- z == 0
+  else -- key released
     -- remove held note
     held_notes[pos] = nil
     
@@ -70,28 +80,31 @@ function grid.key(x, y, z)
   grid_dirty = true
 end
 
--- function to create echoes
+-- echo creation and transposition
 function create_echo(note)
   if current_echo <= 6 then
+    -- calculate level and pitch for this echo
     local level = params:get("decay_factor") ^ (current_echo - 1)
     local pitch = note
     
+    -- adjust pitch based on direction
     if params:get("direction") == 1 then -- Down
       pitch = note - (current_echo - 1) * get_scale_interval()
     else -- Up
       pitch = note + (current_echo - 1) * get_scale_interval()
     end
     
-    if params:get("sound_source") == 2 then -- Sample
+    -- play through selected sound source
+    if params:get("sound_source") == 1 then -- PolyPerc
+      engine.hz(musicutil.note_num_to_freq(pitch))
+    else -- Sample
       softcut.level(current_echo, level)
       softcut.rate(current_echo, musicutil.note_num_to_freq(pitch) / 440)
-    else -- PolyPerc
-      engine.hz(musicutil.note_num_to_freq(pitch))
     end
     
     current_echo = current_echo + 1
     
-    -- Schedule next echo
+    -- Schedule next echo if we haven't reached the end
     if current_echo <= 6 then
       metro.init(function()
         create_echo(note)
@@ -100,17 +113,27 @@ function create_echo(note)
   end
 end
 
--- helper function for note playing
+-- note playing function - handles initial trigger and echo sequence
 function play_note(x, y)
   local note_offset = ((8-y) * 4) + (x-8)
   local note = params:get("base_note") + note_offset
   
   -- Start echo sequence
   current_echo = 1
-  create_echo(note)
+  
+  if params:get("sound_source") == 1 then -- PolyPerc
+    engine.hz(musicutil.note_num_to_freq(note))
+    if current_echo <= 6 then
+      metro.init(function()
+        create_echo(note)
+      end, params:get("echo_spacing"), 1):start()
+    end
+  else -- Sample
+    create_echo(note)
+  end
 end
 
--- function to play held notes
+-- function to play held notes (called by metro)
 function play_held_notes()
   for pos, note in pairs(held_notes) do
     play_note(note.x, note.y)
@@ -121,21 +144,27 @@ end
 function init()
   -- script state params
   params:add_group("WELL", 13)
+  
+  -- musical parameters
   params:add_option("scale", "Scale", {"Major", "Minor", "Pentatonic", "Chromatic"}, 1)
   params:add_option("direction", "Direction", {"Down", "Up"}, 1)
+  params:add_option("sound_source", "Sound Source", {"PolyPerc", "Sample"}, 1)
+  params:add_number("base_note", "Base Note", 0, 127, BASE_NOTE)
+  
+  -- effect parameters
   params:add_control("echo_spacing", "Echo Speed", controlspec.new(0.05, 1.0, 'lin', 0.01, 0.2, "s"))
   params:add_control("hold_interval", "Hold Time", controlspec.new(0.1, 2.0, 'lin', 0.01, 0.25, "s"))
   params:add_control("decay_factor", "Decay", controlspec.new(0.1, 0.99, 'lin', 0.01, 0.8))
-  params:add_option("sound_source", "Sound Source", {"PolyPerc", "Sample"}, 1)
-  params:add_number("base_note", "Base Note", 0, 127, 60)
+  
+  -- PolyPerc parameters
   params:add_control("cutoff", "Cutoff", controlspec.new(50, 5000, 'exp', 0, 1000, "Hz"))
   params:add_control("release", "Release", controlspec.new(0.1, 3.0, 'lin', 0, 0.5, "s"))
   
-  -- initialize PolyPerc parameters
+  -- initialize PolyPerc
   engine.release(0.5)
   engine.cutoff(1000)
   
-  -- initialize softcut for sample playback
+  -- initialize softcut voices for sample playback
   softcut.reset()
   
   for i=1,6 do
@@ -156,6 +185,7 @@ function init()
   end
   
   -- initialize metros
+  -- hold metro for repeating notes
   hold_metro = metro.init()
   hold_metro.event = play_held_notes
   hold_metro.time = params:get("hold_interval")
@@ -199,6 +229,7 @@ function redraw()
   screen.clear()
   
   if show_instructions then
+    -- draw welcome screen
     screen.level(15)
     screen.move(64,15)
     screen.text_center("W E L L")
@@ -206,7 +237,7 @@ function redraw()
     screen.move(5,25)
     screen.text("K2: Toggle mode")
     screen.move(5,33)
-    screen.text("K3: Toggle sound source")
+    screen.text("K3: Toggle sound (Sample/PolyPerc)")
     
     screen.move(5,45)
     screen.text("E1: Change scale")
@@ -218,6 +249,7 @@ function redraw()
     screen.move(64,40)
     screen.text_center("press K1 to continue")
   else
+    -- main interface
     -- draw concentric circles
     for i=1,num_circles do
       local radius = i * circle_spacing
@@ -236,41 +268,42 @@ function redraw()
     
     -- draw parameter info
     screen.level(15)
-    screen.move(0, 60)
-    screen.text("Scale: " .. params:string("scale"))
-    screen.move(0, 50)
+    screen.move(2, 60)
+    screen.text(params:string("scale"))
+    
+    screen.move(2, 50)
     screen.text(params:string("direction"))
     
     -- show current mode and relevant parameter
     if mode == 1 then
-      screen.move(80, 60)
-      screen.text(string.format("Speed: %.2f", params:get("echo_spacing")))
+      screen.move(70, 60)
+      screen.text(string.format("spd:%.1f", params:get("echo_spacing")))
     else
-      screen.move(80, 60)
-      screen.text(string.format("Hold: %.2f", params:get("hold_interval")))
+      screen.move(70, 60)
+      screen.text(string.format("hld:%.1f", params:get("hold_interval")))
     end
     
     -- show sound source
-    screen.move(0, 40)
-    screen.text(params:string("sound_source"))
+    screen.move(2, 40)
+    screen.text(params:get("sound_source") == 1 and "PolyPerc" or "Sample")
   end
   
   screen.update()
 end
 
--- grid redraw function
+-- grid redraw function - handles visual feedback
 function grid_redraw()
   g:all(0)
   
   -- draw held notes
   for pos, note in pairs(held_notes) do
-    g:led(note.x, note.y, 15)
+    g:led(note.x, note.y, GRID_BRIGHTNESS)
   end
   
   -- update and draw ripples
   for i=#grid_ripples,1,-1 do
     local r = grid_ripples[i]
-    r.radius = r.radius + 0.5
+    r.radius = r.radius + RIPPLE_SPEED
     r.life = r.life - 1
     
     -- draw ripple
@@ -294,7 +327,7 @@ function grid_redraw()
   g:refresh()
 end
 
--- helper functions
+-- helper function for scale intervals
 function get_scale_interval()
   local intervals = {
     {2,2,1,2,2,2,1}, -- major
