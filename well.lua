@@ -1,4 +1,4 @@
--- Well (v1.0.6)
+-- Well (v1.0.7)
 -- A deep audio well with 
 -- circular ripples
 -- @your_name
@@ -40,9 +40,11 @@ local num_circles = CIRCLES
 local hold_metro
 local screen_metro
 local grid_metro
+local echo_metro
 local current_echo = 1
+local current_note = nil
 
--- grid key function - handles note triggering and visual feedback
+-- grid key function
 function grid.key(x, y, z)
   local pos = x .. "," .. y
   
@@ -61,7 +63,6 @@ function grid.key(x, y, z)
     
     -- play the note and start echo sequence
     play_note(x, y)
-    current_echo = 1
     
     -- start hold metro if this is the first held note
     if tab.count(held_notes) == 1 and hold_metro then
@@ -80,21 +81,37 @@ function grid.key(x, y, z)
   grid_dirty = true
 end
 
--- echo creation and transposition
-function create_echo(note)
+-- note playing function
+function play_note(x, y)
+  local note_offset = ((8-y) * 4) + (x-8)
+  local note = params:get("base_note") + note_offset
+  
+  -- Reset echo state
+  current_echo = 1
+  current_note = note
+  
+  -- Initial note
+  if params:get("sound_source") == 1 then -- PolyPerc
+    engine.hz(musicutil.note_num_to_freq(note))
+  end
+  
+  -- Start echo sequence
+  echo_metro.time = params:get("echo_spacing")
+  echo_metro:start()
+end
+
+-- create echo function
+function create_echo()
   if current_echo <= 6 then
-    -- calculate level and pitch for this echo
     local level = params:get("decay_factor") ^ (current_echo - 1)
-    local pitch = note
+    local pitch = current_note
     
-    -- adjust pitch based on direction
     if params:get("direction") == 1 then -- Down
-      pitch = note - (current_echo - 1) * get_scale_interval()
+      pitch = current_note - (current_echo - 1) * get_scale_interval()
     else -- Up
-      pitch = note + (current_echo - 1) * get_scale_interval()
+      pitch = current_note + (current_echo - 1) * get_scale_interval()
     end
     
-    -- play through selected sound source
     if params:get("sound_source") == 1 then -- PolyPerc
       engine.hz(musicutil.note_num_to_freq(pitch))
     else -- Sample
@@ -103,37 +120,13 @@ function create_echo(note)
     end
     
     current_echo = current_echo + 1
-    
-    -- Schedule next echo if we haven't reached the end
-    if current_echo <= 6 then
-      metro.init(function()
-        create_echo(note)
-      end, params:get("echo_spacing"), 1):start()
-    end
+    screen_dirty = true
+  else
+    echo_metro:stop()
   end
 end
 
--- note playing function - handles initial trigger and echo sequence
-function play_note(x, y)
-  local note_offset = ((8-y) * 4) + (x-8)
-  local note = params:get("base_note") + note_offset
-  
-  -- Start echo sequence
-  current_echo = 1
-  
-  if params:get("sound_source") == 1 then -- PolyPerc
-    engine.hz(musicutil.note_num_to_freq(note))
-    if current_echo <= 6 then
-      metro.init(function()
-        create_echo(note)
-      end, params:get("echo_spacing"), 1):start()
-    end
-  else -- Sample
-    create_echo(note)
-  end
-end
-
--- function to play held notes (called by metro)
+-- function to play held notes
 function play_held_notes()
   for pos, note in pairs(held_notes) do
     play_note(note.x, note.y)
@@ -185,12 +178,14 @@ function init()
   end
   
   -- initialize metros
-  -- hold metro for repeating notes
+  echo_metro = metro.init()
+  echo_metro.event = create_echo
+  echo_metro.time = params:get("echo_spacing")
+  
   hold_metro = metro.init()
   hold_metro.event = play_held_notes
   hold_metro.time = params:get("hold_interval")
   
-  -- screen redraw metro
   screen_metro = metro.init()
   screen_metro.event = function()
     screen_dirty = true
@@ -199,7 +194,6 @@ function init()
   screen_metro.time = 1/30
   screen_metro:start()
   
-  -- grid redraw metro
   grid_metro = metro.init()
   grid_metro.event = function()
     grid_dirty = true
@@ -221,6 +215,7 @@ function cleanup()
   if hold_metro then hold_metro:stop() end
   if screen_metro then screen_metro:stop() end
   if grid_metro then grid_metro:stop() end
+  if echo_metro then echo_metro:stop() end
   softcut.reset()
 end
 
@@ -260,7 +255,7 @@ function redraw()
     end
     
     -- highlight active echo
-    if current_echo <= num_circles then
+    if current_echo and current_echo <= num_circles then
       screen.level(15)
       screen.circle(screen_center_x, screen_center_y, current_echo * circle_spacing)
       screen.stroke()
@@ -291,7 +286,7 @@ function redraw()
   screen.update()
 end
 
--- grid redraw function - handles visual feedback
+-- grid redraw function
 function grid_redraw()
   g:all(0)
   
@@ -327,7 +322,7 @@ function grid_redraw()
   g:refresh()
 end
 
--- helper function for scale intervals
+-- helper functions
 function get_scale_interval()
   local intervals = {
     {2,2,1,2,2,2,1}, -- major
@@ -360,7 +355,7 @@ end
 
 -- key handlers
 function key(n,z)
-  if show_instructions and n == 1 and z == 1 then
+  if n == 1 and z == 1 and show_instructions then
     show_instructions = false
     screen_dirty = true
     return
